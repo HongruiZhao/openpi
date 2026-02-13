@@ -1,0 +1,10 @@
+checkpoint_dir: "gs://openpi-assets/checkpoints/pi05_base"
+config_name: "pi05_libero"
+task_suite_name: "libero_spatial"
+task_id: 5
+num_steps_wait: 10
+max_steps: 500
+video_out_path: "examples/libero_sim/videos"
+seed: 7
+resize_size: 224
+task_description: "open the drawer" # Optional: Manually override the task prompt
