@@ -1,0 +1,11 @@
+checkpoint_dir: "gs://openpi-assets/checkpoints/pi05_libero"
+config_name: "pi05_libero"
+task_suite_name: "libero_goal"
+task_id: 0
+num_steps_wait: 10
+max_steps: 500
+epoch: 10
+video_out_path: "examples/my_libero_sim/videos"
+seed: 7
+resize_size: 224
+task_description: "bowl_cabinet" # Optional: Manually override the task prompt

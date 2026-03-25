@@ -187,14 +187,16 @@ class Attention(nn.Module):
                     name=_name("q_einsum", i),
                     init_fn=nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0,)),
                     lora_config=config.lora_configs.get("attn"),
-                )
+                ) # (8,2048,256)
+                # B; batch, T: token length,  D: token dim (2048), 
+                # N: number of heads (8) , H: head dimension/D_h (256)
                 q = q_einsum("BTD,NDH->BTNH", x)
                 kv_einsum = lora.Einsum(
                     shape=(2, config.num_kv_heads, config.width, config.head_dim),
                     name=_name("kv_einsum", i),
                     init_fn=nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0, 1)),
                     lora_config=config.lora_configs.get("attn"),
-                )
+                ) # (2,1,2048,256)
                 k, v = kv_einsum("BSD,2KDH->2BSKH", x)
                 qkvs.append((q, k, v))
 

@@ -1,3 +1,10 @@
+
+# robosuite
+* Robotsuite is a simulation frameworkbased on MuJoCO.
+* Meta-World and LIBERO simulated benckmarks/tasks that are based on robosuite.
+* robosuite is being updated frequently, the newer version has feature that Meta-World nad LIBERO don't have.
+
+
 # Meta-World
 
 Meta-World is an open-source benchmark designed for multi-task and meta-reinforcement learning in robotic manipulation. It provides a suite of continuous control environments based on the Gymnasium API.
