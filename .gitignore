@@ -168,3 +168,4 @@ cython_debug/
 #.idea/
 
 examples/my_libero_sim/videos
+paste.txt
