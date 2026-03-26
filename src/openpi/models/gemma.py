@@ -197,6 +197,7 @@ class Attention(nn.Module):
                     init_fn=nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0, 1)),
                     lora_config=config.lora_configs.get("attn"),
                 ) # (2,1,2048,256)
+                # S: token length for key, value, K: num of kv heads 
                 k, v = kv_einsum("BSD,2KDH->2BSKH", x)
                 qkvs.append((q, k, v))
 

@@ -9,3 +9,7 @@ video_out_path: "examples/my_libero_sim/videos"
 seed: 7
 resize_size: 224
 task_description: "bowl_cabinet" # Optional: Manually override the task prompt
+
+
+Analysis:
+  output_attention_weight: True
