@@ -206,7 +206,7 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
         attn_mask = make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+        (prefix_out, suffix_out), (kv_cache, stacked_probs) = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
@@ -234,7 +234,7 @@ class Pi0(_model.BaseModel):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        _, (kv_cache, prefix_probs) = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
 
         def step(carry):
             x_t, time = carry
@@ -258,7 +258,7 @@ class Pi0(_model.BaseModel):
             # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
             positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
 
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+            (prefix_out, suffix_out), (kv_cache_new, step_probs) = self.PaliGemma.llm(
                 [None, suffix_tokens],
                 mask=full_attn_mask,
                 positions=positions,
@@ -277,3 +277,52 @@ class Pi0(_model.BaseModel):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    def sample_actions_with_attention(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ) -> dict[str, at.Array]:
+        observation = _model.preprocess_observation(None, observation, train=False)
+        dt = -1.0 / num_steps
+        batch_size = observation.state.shape[0]
+        if noise is None:
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        # first fill KV cache with a forward pass of the prefix
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, (kv_cache, prefix_probs) = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+
+        def step(carry, _):
+            x_t, time = carry
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (prefix_out, suffix_out), (_, step_probs) = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond],
+            )
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+            return (x_t + dt * v_t, time + dt), step_probs
+
+        (x_0, _), all_steps_probs = jax.lax.scan(step, (noise, 1.0), jnp.arange(num_steps))
+
+        return {
+            "actions": x_0,
+            "prefix_attention": prefix_probs,
+            "step_attention": all_steps_probs,
+        }

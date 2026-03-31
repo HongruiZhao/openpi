@@ -26,13 +26,14 @@ class Policy(BasePolicy):
         self,
         model: _model.BaseModel,
         *,
-        rng: at.KeyArrayLike | None = None,
+        rng: at.KeyArrayLike | None = None, # can be an array or None, default = None 
         transforms: Sequence[_transforms.DataTransformFn] = (),
         output_transforms: Sequence[_transforms.DataTransformFn] = (),
         sample_kwargs: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         pytorch_device: str = "cpu",
         is_pytorch: bool = False,
+        analysis_flag: dict[str, bool] = {}
     ):
         """Initialize the Policy.
 
@@ -54,6 +55,7 @@ class Policy(BasePolicy):
         self._metadata = metadata or {}
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
+        self.analysis_flag = analysis_flag
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -61,7 +63,11 @@ class Policy(BasePolicy):
             self._sample_actions = model.sample_actions
         else:
             # JAX model setup
-            self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            if self.analysis_flag["output_attention_weight"]:
+                # Use a separate method for attention extraction to avoid breaking standard JIT rules.
+                self._sample_actions = nnx_utils.module_jit(model.sample_actions_with_attention)
+            else:
+                self._sample_actions = nnx_utils.module_jit(model.sample_actions)
             self._rng = rng or jax.random.key(0)
 
     @override
@@ -89,17 +95,29 @@ class Policy(BasePolicy):
 
         observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
-        outputs = {
-            "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
-        }
+        sample_result = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         model_time = time.monotonic() - start_time
+
+        if isinstance(sample_result, dict):
+            outputs = {
+                "state": inputs["state"],
+                **sample_result,
+            }
+        else:
+            outputs = {
+                "state": inputs["state"],
+                "actions": sample_result,
+            }
+
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         else:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
-        outputs = self._output_transform(outputs)
+        # Only apply output transforms to state and actions to preserve attention weights
+        to_transform = {k: outputs[k] for k in ("state", "actions") if k in outputs}
+        outputs.update(self._output_transform(to_transform))
+
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }

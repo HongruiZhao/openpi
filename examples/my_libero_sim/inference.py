@@ -84,11 +84,11 @@ def _setup_logging(video_out_path:str, log_name:str):
     logger.addHandler(file_handler)
 
 
-def _load_policy(config_name, checkpoint_dir):
+def _load_policy(config_name, checkpoint_dir, analysis_flag):
     logger.info(f"Loading policy {config_name} from {checkpoint_dir}")
     config = _config.get_config(config_name)
     checkpoint_path = download.maybe_download(checkpoint_dir)
-    return policy_config.create_trained_policy(config, checkpoint_path)
+    return policy_config.create_trained_policy(config, checkpoint_path, analysis_flag=analysis_flag)
 
 
 def _init_libero(args):
@@ -115,6 +115,7 @@ def _run_loop(env, policy, task_description, initial_states, args):
     resize_size = args.get("resize_size", 224)
     num_epoch = args.get("epoch", 5)
     replay_images = []
+    replay_analysis = []
 
     for epoch in trange(num_epoch):
         env.reset()
@@ -147,8 +148,18 @@ def _run_loop(env, policy, task_description, initial_states, args):
                     "prompt": str(task_description),
                 }
                 
-                action_chunk = policy.infer(input_data)["actions"]
+                infer_result = policy.infer(input_data)
+                action_chunk = infer_result["actions"]
                 action_plan.extend(action_chunk)
+
+                # Store attention if it exists
+                if "prefix_attention" in infer_result:
+                    replay_analysis.append({
+                        "epoch": epoch,
+                        "step": t,
+                        "prefix_attention": infer_result["prefix_attention"],
+                        "step_attention": infer_result["step_attention"],
+                    })
                 
             action = action_plan.popleft()
             obs, _, done, _ = env.step(action.tolist())
@@ -157,7 +168,7 @@ def _run_loop(env, policy, task_description, initial_states, args):
                 logger.info(f"Task successful! time: {t},epoch:{epoch}")
                 break
         
-    return replay_images
+    return replay_images, replay_analysis
 
 
 def _save_video(video_out_path: str, log_name: str, 
@@ -165,6 +176,24 @@ def _save_video(video_out_path: str, log_name: str,
     video_path = pathlib.Path(video_out_path) / (log_name + '.mp4')
     logger.info(f"Saving video to {video_path}")
     imageio.mimwrite(video_path, replay_images, fps=240)
+
+
+def _save_analysis(video_out_path: str, log_name: str, 
+                   replay_analysis: list[dict]):
+    if not replay_analysis:
+        return
+    analysis_path = pathlib.Path(video_out_path) / (log_name + '_analysis.npz')
+    logger.info(f"Saving analysis to {analysis_path}")
+    # Convert list of dicts to a single dict of arrays for efficient saving.
+    # We convert attention weights to float32 to ensure they are correctly saved and 
+    # loaded by NumPy, avoiding issues with bfloat16 (which often loads as |V2).
+    save_dict = {
+        "prefix_attention": np.array([x["prefix_attention"] for x in replay_analysis]).astype(np.float32),
+        "step_attention": np.array([x["step_attention"] for x in replay_analysis]).astype(np.float32),
+        "epochs": np.array([x["epoch"] for x in replay_analysis]),
+        "steps": np.array([x["step"] for x in replay_analysis]),
+    }
+    np.savez_compressed(analysis_path, **save_dict)
 
 
 def run_inference(args: dict):
@@ -175,21 +204,25 @@ def run_inference(args: dict):
     pathlib.Path(video_out_path).mkdir(parents=True, exist_ok=True)
     task_suite_name = args.get("task_suite_name", "libero_10")
 
+    analysis_flag = args.get('analysis', {})
+
     try:
         env, task_description, initial_states, _, task__id = _init_libero(args)
         log_name =  checkpoint_name + "_" + task_suite_name + "_" + str(task__id) + "_" + task_description
         _setup_logging(video_out_path, log_name)
         
-        policy = _load_policy(config_name, checkpoint_dir)
+        policy = _load_policy(config_name, checkpoint_dir, analysis_flag)
         logger.info(f"Task: {task_description}")
-        replay_images = _run_loop(env, policy, task_description, initial_states, args)
+        replay_images, replay_analysis = _run_loop(env, policy, task_description, initial_states, args)
         
-        _save_video(video_out_path,log_name, replay_images)
+        _save_video(video_out_path, log_name, replay_images)
+        _save_analysis(video_out_path, log_name, replay_analysis)
         env.close()
     except Exception as e:
         logger.exception(f"An error occurred: {e}", extra={"error": str(e)})
     finally:
         logger.info('program finished!')
+
 
 
 if __name__ == "__main__":
